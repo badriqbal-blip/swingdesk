@@ -1,0 +1,272 @@
+# ───────────────────────────── SwingDesk configuration ─────────────────────────────
+# Amounts are in AED unless stated. Edit freely; every value here is read at run time.
+
+capital_aed: 20000
+aed_per_usd: 3.6725           # AED is pegged to USD → USD/USDT positions carry no FX risk for an AED account
+markets: [us, uae, crypto]    # which markets `scan` runs by default
+holding_days: 15              # trading days ≈ 3 weeks (2–4 week swing horizon)
+lookback_years: 3
+rebalance_days: 5             # backtest re-ranks the universe weekly
+
+risk:
+  # Fixed-fractional risk: AED at risk per trade = capital × pct / 100, scaled by market regime
+  risk_per_trade_pct: {RISK_ON: 1.0, NEUTRAL: 0.75, RISK_OFF: 0.5, CRISIS: 0.0}
+  max_positions:      {RISK_ON: 6,   NEUTRAL: 4,    RISK_OFF: 2,   CRISIS: 0}
+  max_position_pct: 25          # single position ≤ 25% of capital (no leverage, spot only)
+  max_portfolio_heat_pct: 5     # sum of open risk ≤ 5% of capital
+  max_total_exposure_pct: 100   # cash account: never above 100% deployed
+  stop_atr_mult: 2.0            # initial stop = entry − 2 ATR, or below the 10-day swing low if lower
+  max_stop_atr_mult: 3.5        # never place the stop further than 3.5 ATR away
+  breakeven_at_r: 1.0           # move stop to breakeven once +1R
+  trail_after_r: 1.0            # start the chandelier trail once +1R
+  trail_atr_mult: 2.5           # trail = highest close − 2.5 ATR
+  target1_r: 1.5                # scale out 1/2 at +1.5R
+  target2_r: 3.0                # final target +3R (or trail)
+  time_stop_days: 15            # exit if < +0.5R after 15 bars (dead money)
+  max_hold_days: 25             # hard max hold (≈5 weeks)
+  corr_threshold: 0.70          # don't hold two names with 60-day return correlation > 0.70
+  sector_cap: 2                 # max names per sector
+  commission_pct: 0.10          # per side
+  slippage_pct: 0.05            # per side
+  fractional_shares_us: true    # set false if your US broker does not offer fractional shares
+
+liquidity:
+  min_adv_us_usd: 20000000      # 20-day average dollar volume
+  min_adv_uae_aed: 3000000
+  min_adv_crypto_usd: 30000000
+  min_price_us: 5
+
+events:
+  earnings_policy: flag         # flag | halve | veto  — what to do if earnings land inside the holding window
+  earnings_window_days: 21      # calendar days ≈ holding period
+  macro_dates:                  # verify at federalreserve.gov/monetarypolicy/fomccalendars.htm
+    - {date: "2026-10-28", name: "FOMC decision"}
+    - {date: "2026-12-09", name: "FOMC decision"}
+
+# Factor-group weights by regime (renormalised over the groups available for a given market/ticker)
+weights:
+  RISK_ON:  {trend: 0.20, momentum: 0.25, timing: 0.15, volatility: 0.10, volume: 0.10, fundamentals: 0.10, sentiment: 0.10}
+  NEUTRAL:  {trend: 0.20, momentum: 0.15, timing: 0.25, volatility: 0.10, volume: 0.10, fundamentals: 0.15, sentiment: 0.05}
+  RISK_OFF: {trend: 0.15, momentum: 0.05, timing: 0.30, volatility: 0.10, volume: 0.10, fundamentals: 0.30, sentiment: 0.00}
+  CRISIS:   {trend: 0.15, momentum: 0.05, timing: 0.30, volatility: 0.10, volume: 0.10, fundamentals: 0.30, sentiment: 0.00}
+
+ml:
+  blend: 0.30                   # weight of the walk-forward ML probability in conviction when --ml is used
+  step_days: 20                 # retrain every N bars in the walk-forward evaluation
+  min_train_days: 250
+
+crypto:
+  exchange: binance             # any ccxt exchange id with public daily OHLCV (binance, okx, kraken, bybit, coinbase)
+  fallback_exchanges: [okx, kraken]
+
+benchmarks:
+  us: SPY
+  uae: null                     # null → equal-weight composite of the UAE universe
+  crypto: BTC/USDT
+
+aux:                            # US regime inputs
+  vix: ^VIX
+  credit_risk_on: HYG
+  credit_risk_off: IEF
+
+scan:
+  fundamentals_top: 40          # fetch fundamentals for the top-N technical scores (speed)
+  news_top: 25                  # fetch news/earnings dates for the top-N
+cache_dir: .cache
+cache_ttl_hours: 12
+fundamentals_ttl_hours: 24
+
+universe:
+  us:
+    # Mega/large caps across sectors
+    - AAPL
+    - MSFT
+    - NVDA
+    - AMZN
+    - GOOGL
+    - META
+    - TSLA
+    - AVGO
+    - BRK-B
+    - LLY
+    - JPM
+    - V
+    - MA
+    - UNH
+    - XOM
+    - COST
+    - HD
+    - PG
+    - JNJ
+    - ABBV
+    - NFLX
+    - CRM
+    - BAC
+    - WMT
+    - KO
+    - MRK
+    - PEP
+    - CVX
+    - ORCL
+    - AMD
+    - ADBE
+    - TMO
+    - LIN
+    - ACN
+    - CSCO
+    - MCD
+    - ABT
+    - WFC
+    - GE
+    - IBM
+    - CAT
+    - DHR
+    - INTU
+    - TXN
+    - AMGN
+    - ISRG
+    - QCOM
+    - NOW
+    - GS
+    - SPGI
+    - AXP
+    - BKNG
+    - UBER
+    - HON
+    - LOW
+    - PFE
+    - BLK
+    - NEE
+    - UNP
+    - RTX
+    - AMAT
+    - COP
+    - PLTR
+    - MU
+    - PANW
+    - ANET
+    - LRCX
+    - KLAC
+    - VRTX
+    - SBUX
+    - GILD
+    - DE
+    - BA
+    - SCHW
+    - MS
+    - MDT
+    - ADI
+    - ETN
+    - TJX
+    - PGR
+    - LMT
+    - REGN
+    - SNPS
+    - CDNS
+    - CRWD
+    - MRVL
+    - SHOP
+    - ABNB
+    - MELI
+    - ARM
+    - TSM
+    - ASML
+    - NVO
+    # Sector / asset-class ETFs — give the ranker a way to rotate into defence (gold, bonds, staples)
+    - SPY
+    - QQQ
+    - IWM
+    - XLK
+    - XLF
+    - XLE
+    - XLV
+    - XLI
+    - XLY
+    - XLP
+    - XLU
+    - XLB
+    - SMH
+    - XBI
+    - GLD
+    - SLV
+    - TLT
+    - EEM
+    - EFA
+    - KWEB
+  uae:
+    # Yahoo Finance uses the exchange symbol + ".AE" for both DFM and ADX. Run `python run.py validate` to confirm coverage.
+    - EMAAR.AE
+    - EMAARDEV.AE
+    - DIB.AE
+    - EMIRATESNBD.AE
+    - DEWA.AE
+    - SALIK.AE
+    - DFM.AE
+    - DU.AE
+    - AIRARABIA.AE
+    - EMPOWER.AE
+    - PARKIN.AE
+    - TECOM.AE
+    - TALABAT.AE
+    - ARMX.AE
+    - TABREED.AE
+    - CBD.AE
+    - DTC.AE
+    - SPINNEYS.AE
+    - FAB.AE
+    - ADCB.AE
+    - ADIB.AE
+    - IHC.AE
+    - ALPHADHABI.AE
+    - MULTIPLY.AE
+    - ADNOCDIST.AE
+    - ADNOCDRILL.AE
+    - ADNOCGAS.AE
+    - ADNOCLS.AE
+    - BOROUGE.AE
+    - FERTIGLB.AE
+    - TAQA.AE
+    - ALDAR.AE
+    - EAND.AE
+    - PUREHEALTH.AE
+    - ADNH.AE
+    - ADPORTS.AE
+    - AGTHIA.AE
+    - PRESIGHT.AE
+    - SPACE42.AE
+    - BURJEEL.AE
+    - RAKBANK.AE
+    - NMDC.AE
+    - DANA.AE
+    - MODON.AE
+  crypto:
+    - BTC/USDT
+    - ETH/USDT
+    - SOL/USDT
+    - BNB/USDT
+    - XRP/USDT
+    - ADA/USDT
+    - DOGE/USDT
+    - AVAX/USDT
+    - LINK/USDT
+    - DOT/USDT
+    - TRX/USDT
+    - LTC/USDT
+    - BCH/USDT
+    - NEAR/USDT
+    - SUI/USDT
+    - APT/USDT
+    - ARB/USDT
+    - OP/USDT
+    - INJ/USDT
+    - TON/USDT
+    - HBAR/USDT
+    - UNI/USDT
+    - AAVE/USDT
+    - ATOM/USDT
+    - FIL/USDT
+    - RENDER/USDT
+    - TAO/USDT
+    - FET/USDT
+    - ONDO/USDT
+    - ENA/USDT
