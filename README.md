@@ -2,7 +2,7 @@
 
 A multi-factor swing-trade research and risk engine for **US equities/ETFs, UAE equities (DFM/ADX) and crypto spot**, sized for a **20,000 AED cash account**, long-only, no CFDs or leverage, 2–4 week holding horizon.
 
-It does what a systematic desk actually does: detect the market regime, rank every name against its peers on trend, momentum, entry timing, volatility compression, volume, fundamentals and news, classify the setup, size the position off a fixed risk budget with a structure-based stop, and enforce portfolio constraints. Then it tells you, honestly, how much information the ranking has had historically.
+It does what a systematic desk actually does: detect the market regime, rank every name against its peers on trend, momentum, entry timing, volatility compression, volume, fundamentals and news, classify the setup, size the position off a fixed risk budget with a structure-based stop, and enforce portfolio constraints. Then it turns all of that into **one plan for the whole account** — exactly how many AED go into which tickers across US, UAE and crypto, how much stays in cash and why — and tells you, honestly, how much information the ranking has had historically.
 
 **What it is not:** a crystal ball. No program predicts prices. Good desks make money with small, persistent edges plus strict risk control — the edge here is a disciplined, repeatable process, and the risk engine is the part that keeps you in the game. This is a research tool, not investment advice.
 
@@ -47,6 +47,39 @@ Typical run time with real data: 1–3 minutes per market (fundamentals and news
 
 ---
 
+## Research layers
+
+| Layer | Source (free, no keys) | Where it shows up |
+|---|---|---|
+| News | Yahoo headlines per name, VADER + finance lexicon, recency-weighted | sentiment factor, "why" text |
+| Social mentions | StockTwits streams (US: message rate, bullish share, watchers); CoinGecko (crypto: community sentiment votes, trending list, Reddit activity). No free X/Reddit API exists; UAE has no usable source | small sentiment factors, flags such as "crowd euphoric on social (contrarian caution)" |
+| Events | Earnings dates, ex-dividend dates, FOMC dates from config | flags, size halving or veto by policy |
+| Macro & commodities | WTI, Brent, gold, silver, copper, natural gas, US 10-year yield, dollar index, VIX, S&P, Nasdaq, long Treasuries, high-yield credit, EM, the UAE equities ETF, Bitcoin | dashboard table + plain-English cross-asset reads (oil → Gulf, copper/gold → growth, dollar → crypto/EM, yields → growth multiples, credit → risk appetite) |
+| Supply & demand of futures money | CFTC Commitments of Traders: net speculative position as % of open interest with a 3-year percentile for crude, gold, silver, copper, gas, bitcoin, S&P, dollar, 10-year | positioning table; "crowded long/short" notes |
+| Sector rotation | US sector ETFs relative to the S&P over 1 week / 1 month / 3 months | rotation table |
+| Micro | Quality, growth, value, street ratings, 30-day EPS estimate revisions | fundamentals factor group |
+
+Macro feeds the plan transparently: an oil downtrend trims the UAE budget ×0.85, a strong dollar trims crypto ×0.9, spiking yields with credit risk-off trims US ×0.9 — each shown in the plan's notes. Physical inventories (EIA) and options positioning are the natural next additions; both need API keys.
+
+## The portfolio plan (where the 20,000 AED goes)
+
+`allocate.py` sits on top of the three market scans:
+
+1. **Market sleeves.** Capital is split from `allocation.market_base_weights` (default US 50 / UAE 20 / crypto 30), then each sleeve is scaled by its regime (RISK_ON ×1.0, NEUTRAL ×0.7, RISK_OFF ×0.35, CRISIS ×0) and by whether the ranking has shown information in that market (rank-IC t-stat ≥ 1.5 keeps the full budget; weaker evidence trims it). Budget a sleeve doesn't earn stays in cash — cash is a position, not a failure.
+2. **Names within a sleeve.** The best eligible, uncorrelated names (sector cap, 60-day correlation cap) get inverse-volatility weights tilted by conviction (`conviction_tilt`), so a quiet large-cap gets more AED than a volatile alt-coin for the same risk. Every position is then capped by its own risk budget (AED lost if the stop is hit, from `risk_per_trade_pct`) and by `max_position_pct`.
+3. **Account limits.** At most `max_total_positions` across all markets, and total open risk capped at `max_portfolio_heat_pct` (every position is scaled down proportionally if needed).
+4. **Live sizing.** With `--live` (the default in the hosted workflow) signals are computed on completed bars only, while sizes, stops and targets of market-entry setups are shifted to the latest quote.
+5. **Holdings.** Put what you already own in `holdings.yaml` and the plan reviews it (HOLD / HOLD-ADD / EXIT with the reason and the stop to use), counts its value against the sleeve, and only proposes new money for the remainder:
+
+```yaml
+holdings:
+  - {market: us, ticker: NVDA, units: 3, entry: 150.0, stop: 140.0}
+  - {market: uae, ticker: EMAAR.AE, units: 300, entry: 8.2}
+  - {market: crypto, ticker: BTC/USDT, units: 0.01, entry: 90000}
+```
+
+The plan is the first section of the briefing and the terminal output, and is saved as `plan_<stamp>.csv` plus the `plan` object in `summary_<stamp>.json`. The risk line under it is the number to respect: what you lose if every stop is hit, and the typical one-day swing of the whole book.
+
 ## Reading the output
 
 Terminal and HTML show, per market: the regime line, then the ranked names with setup, conviction, last price, planned entry, stop (and %), T1/T2, units and AED size, AED at risk, ATR%, a plain-English "why", flags, and a tick for the names the portfolio constraints actually select. Below that: the selected portfolio with open risk vs cap, and the signal-quality line.
@@ -90,12 +123,13 @@ Known biases: the universe is hand-picked current constituents (survivorship bia
 
 `.github/workflows/scan.yml` runs the scan on GitHub's servers every weekday after the US close and on Sunday (with the backtest), then publishes the HTML briefing to GitHub Pages. No computer of yours needs to be on, and it works from a phone:
 
-1. Create a public repository (Pages is free on public repos; the config holds no secrets).
+1. Create a public repository (Pages is free on public repos; the config holds no secrets) and enable Pages once: Settings → Pages → Source: GitHub Actions.
 2. Upload `swingdesk.zip` to the repository root (Add file → Upload files, or `github.com/<user>/<repo>/upload/main`).
-3. Create `.github/workflows/scan.yml` with the contents of the workflow file in this package (Add file → Create new file). The first run unpacks the zip into the repo, commits the code, runs the scan and publishes the page.
-4. If Pages isn't enabled automatically, choose Settings → Pages → Source: GitHub Actions once.
+3. Create `.github/workflows/scan.yml` with the contents of the workflow file in this package (Add file → Create new file). The run unpacks the zip into the repo, commits the code, scans and publishes.
 
-The briefing lives at `https://<user>.github.io/<repo>/`, downloads under `/files.html`; each run's full output is also attached to the run for 90 days. Running it from your own machine instead: `python run.py scan` on a cron/Task Scheduler entry after the US close.
+**Save it like an app.** The page ships a web-app manifest and icon. On iPhone: open the briefing in Safari → Share → "Add to Home Screen". On Android: Chrome menu → "Add to Home screen" / "Install app". The icon opens the latest briefing full-screen; the address never changes.
+
+Updating later is the same move: upload a new `swingdesk.zip` and the next run unpacks it, keeping your `config.yaml` and `holdings.yaml` untouched. The hosted schedule scans every 4 hours (crypto never closes; equities use completed bars) and runs the backtest on Sundays. The briefing lives at `https://<user>.github.io/<repo>/`, downloads under `/files.html`, and the latest outputs are also committed to `history/latest/` in the repo. Running it from your own machine instead: `python run.py scan --live` on a cron/Task Scheduler entry.
 
 The program never connects to a broker or places orders; it produces a plan for you to execute.
 

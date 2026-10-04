@@ -12,7 +12,11 @@ if not briefings:
     raise SystemExit(0)
 latest = briefings[-1]
 shutil.copy(latest, site / "index.html")
-for p in list(out.glob("signals_*.csv")) + list(out.glob("summary_*.json")) + list(out.glob("trades_*.csv")):
+assets = Path("assets")
+if assets.exists():
+    for p in assets.iterdir():
+        shutil.copy(p, site / p.name)          # manifest + icons for "Add to Home Screen"
+for p in list(out.glob("signals_*.csv")) + list(out.glob("summary_*.json")) + list(out.glob("trades_*.csv")) + list(out.glob("plan_*.csv")):
     shutil.copy(p, site / p.name)
 links = "".join(f'<li><a href="{p.name}">{p.name}</a></li>' for p in sorted(site.iterdir()) if p.name != "index.html")
 (site / "files.html").write_text(f"<!doctype html><meta charset='utf-8'><title>SwingDesk files</title>"

@@ -19,13 +19,16 @@ import numpy as np
 import pandas as pd
 
 from swingdesk import data as D
+from swingdesk.allocate import build_plan
+from swingdesk.macro import MACRO_ASSETS, SECTOR_ETFS, commodity_positioning, cross_asset_read, macro_dashboard, sector_rotation
+from swingdesk.social import social_flags, social_frame
 from swingdesk.backtest import decile_analysis, ic_analysis, run_backtest
 from swingdesk.config import load_config
 from swingdesk.events import earnings_assessment, macro_warnings
 from swingdesk.factors import (FUNDAMENTAL_FACTORS, SENTIMENT_FACTORS, breadth_series, build_panel,
                                fundamental_factors, latest_cross_section)
 from swingdesk.regime import compute_regime, regime_snapshot
-from swingdesk.report import print_backtest, print_scan, save_outputs
+from swingdesk.report import print_backtest, print_macro, print_plan, print_scan, save_outputs
 from swingdesk.risk import plan_trade, returns_matrix, select_portfolio
 from swingdesk.scoring import (SETUP_INFO, classify_setup, composite, conviction_from_composite, explain,
                                group_scores, score_panel, zscore_flat)
@@ -34,7 +37,7 @@ from swingdesk.universe import MARKET_META, aed_per_unit, get_universe, min_adv
 
 
 # ───────────────────────────────────────── data loading ──────────────────────────────────────────
-def load_market(market: str, cfg: dict, demo: bool):
+def load_market(market: str, cfg: dict, demo: bool, live: bool = False):
     tickers = get_universe(cfg, market)
     years = int(cfg["lookback_years"])
     cache, ttl = cfg["cache_dir"], cfg["cache_ttl_hours"]
@@ -71,6 +74,8 @@ def load_market(market: str, cfg: dict, demo: bool):
                 h, i = allp.get(cfg["aux"]["credit_risk_on"]), allp.get(cfg["aux"]["credit_risk_off"])
                 aux["credit"] = (h["Close"] / i["Close"]).dropna() if h is not None and i is not None else None
             source = "Yahoo Finance (yfinance), daily adjusted"
+        if live:
+            prices = D.drop_partial_bar(prices, market)
     bench_name = cfg["benchmarks"].get(market) or "equal-weight universe"
     if market == "crypto" and cfg["benchmarks"].get("crypto") in prices:
         bench = prices[cfg["benchmarks"]["crypto"]]["Close"]
@@ -87,7 +92,7 @@ def scan_market(market: str, cfg: dict, args) -> dict | None:
     meta = MARKET_META[market]
     t0 = time.time()
     print(f"\n[{market}] loading data…")
-    prices, bench, bench_name, aux, source, missing = load_market(market, cfg, args.demo)
+    prices, bench, bench_name, aux, source, missing = load_market(market, cfg, args.demo, getattr(args, "live", False))
     if len(prices) < 5:
         print(f"[{market}] only {len(prices)} instruments with data — skipping. Missing: {missing[:10]}")
         return None
@@ -132,6 +137,7 @@ def scan_market(market: str, cfg: dict, args) -> dict | None:
     # ── news / crowding sentiment ─────────────────────────────────────────────────────────────
     sent_rows: dict[str, dict] = {}
     news_items: dict[str, list] = {}
+    social_notes: dict[str, list] = {}
     if not args.no_news:
         top_n = latest["composite"].sort_values(ascending=False).head(int(cfg["scan"]["news_top"])).index.tolist()
         if market == "crypto" and not args.demo:
@@ -148,6 +154,16 @@ def scan_market(market: str, cfg: dict, args) -> dict | None:
                 if s["n"]:
                     sent_rows.setdefault(t, {}).update({"news_sent": s["news_sent"], "news_attention": s["news_attention"]})
                     news_items[t] = s["items"]
+        if market in ("us", "crypto") and not args.no_social:
+            print(f"[{market}] social mentions for top {len(top_n)}…")
+            soc = social_frame(market, top_n, cfg["cache_dir"], args.demo)
+            for t, row in soc.iterrows():
+                sent_rows.setdefault(t, {}).update({k: row[k] for k in ["social_buzz", "social_bull"] if k in soc.columns and pd.notna(row[k])})
+                fl = social_flags(row)
+                if fl:
+                    social_notes[t] = fl
+            if not soc.empty:
+                latest = latest.join(soc[[c for c in ["social_buzz", "social_bull"] if c in soc.columns]], how="left")
     if sent_rows:
         sf = pd.DataFrame.from_dict(sent_rows, orient="index")
         zs = zscore_flat(sf, [c for c in SENTIMENT_FACTORS if c in sf.columns])
@@ -196,8 +212,12 @@ def scan_market(market: str, cfg: dict, args) -> dict | None:
         setup = classify_setup(r)
         info = SETUP_INFO[setup]
         ea = {"flag": "", "size_mult": 1.0, "veto": False, "earnings_date": None}
+        extra_flags: list[str] = list(social_notes.get(t, []))
         if t in earn_targets and not args.demo and not args.no_news:
             ea = earnings_assessment(D.fetch_next_earnings(t, cfg["cache_dir"]), today, int(ev_cfg["earnings_window_days"]), ev_cfg["earnings_policy"])
+            xd = D.fetch_exdividend(t, cfg["cache_dir"])
+            if xd is not None and 0 <= (pd.Timestamp(xd) - today).days <= int(ev_cfg["earnings_window_days"]):
+                extra_flags.append(f"Ex-dividend {xd}")
         size_mult = fg_mult * ea["size_mult"] * (0.5 if info["kind"] == "momentum" else 1.0)
         plan = plan_trade(r, setup, cfg, regime_now, capital, unit, market, size_mult) or {}
         liquid = float(r.get("adv20", 0) or 0) >= adv_floor
@@ -214,12 +234,13 @@ def scan_market(market: str, cfg: dict, args) -> dict | None:
             "conviction": float(np.clip(conv, 1, 99)), "earnings_flag": ea["flag"], "earnings_date": ea["earnings_date"],
             "veto": bool(ea["veto"]), "liquid": liquid, "why": explain(r), **{k: plan.get(k, np.nan) for k in
             ["entry", "stop", "stop_pct", "t1", "t2", "units", "pos_native", "pos_aed", "risk_aed", "risk_pct", "cost_aed", "hold_days", "entry_note", "exit_rule"]},
-            "plan_flags": plan.get("plan_flags", []) + ([] if liquid else ["below liquidity floor"]),
+            "plan_flags": plan.get("plan_flags", []) + ([] if liquid else ["below liquidity floor"]) + extra_flags,
         })
     cands = pd.DataFrame(plans).set_index("ticker")
     keep = ["close", "atr", "atr_pct", "rsi14", "rsi2", "adx", "dist21_atr", "pct_52w_high", "mom_1m", "mom_3m", "mom_6m", "mom_12_1",
             "rvol", "adv20", "squeeze_on", "breakout20", "breakout55", "uptrend", "composite", "comp_rank", "composite_final",
             "g_trend", "g_momentum", "g_timing", "g_volatility", "g_volume", "g_fundamentals", "g_sentiment", "news_sent", "ml_prob",
+            "social_buzz", "social_bull",
             "sector", "shortName", "shortPercentOfFloat", "date"]
     cands = cands.join(latest[[c for c in keep if c in latest.columns]])
     cands = cands.sort_values("conviction", ascending=False)
@@ -235,10 +256,37 @@ def scan_market(market: str, cfg: dict, args) -> dict | None:
         bt = run_backtest(scored, prices, regime_df, cfg, adv_floor, meta["periods_per_year"], bench)
 
     sparks = {t: prices[t]["Close"].tail(60).tolist() for t in cands.head(15).index if t in prices}
+    live_px: dict[str, float] = {}
+    if getattr(args, "live", False) and not args.demo:
+        top_live = cands[cands["eligible"].astype(bool)].head(12).index.tolist()
+        live_px = D.fetch_live_prices(market, top_live, cfg["crypto"]["exchange"], cfg["crypto"].get("fallback_exchanges", []))
+        if live_px:
+            notes.append(f"Live quotes applied to {len(live_px)} names for sizing (signals use completed bars)")
     print(f"[{market}] done in {time.time() - t0:.1f}s")
     return {"market": market, "label": meta["label"], "source": source, "regime": snap, "notes": notes, "candidates": cands,
             "portfolio": port, "diagnostics": diag, "ml_metrics": ml_metrics, "backtest": bt, "sparks": sparks,
-            "news": news_items, "fear_greed": fg, "missing": missing}
+            "news": news_items, "fear_greed": fg, "missing": missing, "rets": rets, "live": live_px}
+
+
+def macro_context(cfg: dict, demo: bool) -> dict:
+    """Cross-asset dashboard, reads, CFTC positioning and sector rotation (all read-only context)."""
+    tickers = sorted(set(MACRO_ASSETS.values()) | set(SECTOR_ETFS))
+    if demo:
+        prices = D.demo_prices(tickers, 400, seed=23, vol=0.015, level=80)
+        cot = pd.DataFrame()
+    else:
+        try:
+            prices = D.fetch_equity_ohlcv(tickers, 2, cfg["cache_dir"], cfg["cache_ttl_hours"], verbose=False)
+        except Exception:  # noqa: BLE001
+            prices = {}
+        cot = commodity_positioning(cfg["cache_dir"])
+    dash = macro_dashboard(prices)
+    notes, flags = cross_asset_read(dash) if not dash.empty else ([], {})
+    for _, r in (cot.iterrows() if not cot.empty else []):
+        if r["read"] != "neutral":
+            notes.append(f"Futures positioning: {r['market']} speculators are {r['read']} ({r['net_spec_pct_oi']:+.0f}% of open interest, "
+                         f"{r['pct_3y']:.0f}th percentile of 3 years) — {'a source of selling if the trend stalls' if r['read'] == 'crowded long' else 'squeeze fuel if price turns up'}.")
+    return {"dashboard": dash, "notes": notes, "flags": flags, "positioning": cot, "sectors": sector_rotation(prices)}
 
 
 # ─────────────────────────────────────────── commands ────────────────────────────────────────────
@@ -252,11 +300,20 @@ def cmd_scan(cfg, args):
         res = scan_market(m, cfg, args)
         if res:
             results.append(res)
+    plan, macro = None, None
+    if results:
+        print("\n[macro] cross-asset dashboard, positioning, sector rotation…")
+        macro = macro_context(cfg, args.demo)
+        holdings = D.load_holdings(args.holdings or cfg.get("holdings_file", "holdings.yaml"))
+        live = {k: v for r in results for k, v in (r.get("live") or {}).items()}
+        plan = build_plan(results, cfg, holdings, live, macro.get("flags"))
+        print_plan(plan, cfg)
+        print_macro(macro)
     for res in results:
         print_scan(res, cfg, args.top)
     if results:
         stamp = dt.datetime.now().strftime("%Y-%m-%d_%H%M")
-        paths = save_outputs(results, cfg, args.outdir, stamp)
+        paths = save_outputs(results, cfg, args.outdir, stamp, plan, macro)
         print("\nFiles written:")
         for k, p in paths.items():
             print(f"  {k:<14} {p}")
@@ -358,8 +415,11 @@ def main(argv=None):
             s.add_argument("--top", type=int, default=10)
             s.add_argument("--no-fundamentals", action="store_true")
             s.add_argument("--no-news", action="store_true")
+            s.add_argument("--no-social", action="store_true")
             s.add_argument("--with-backtest", action="store_true")
             s.add_argument("--outdir", default="output")
+            s.add_argument("--live", action="store_true", help="drop partial bars, size with live quotes")
+            s.add_argument("--holdings", default=None, help="path to holdings.yaml (default from config)")
     s = sub.add_parser("size")
     s.add_argument("--market", default="us", choices=list(MARKET_META))
     s.add_argument("--entry", type=float, required=True)

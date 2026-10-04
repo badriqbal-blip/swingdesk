@@ -270,3 +270,17 @@ universe:
     - FET/USDT
     - ONDO/USDT
     - ENA/USDT
+
+# ── added by SwingDesk update (new options with their defaults) ──
+# Portfolio layer: how the whole account is split (see swingdesk/allocate.py)
+allocation:
+  market_base_weights: {us: 0.50, uae: 0.20, crypto: 0.30}   # starting split; scaled by regime and signal quality
+  max_deploy_pct: 100          # never above this share of capital in positions (cash account)
+  min_position_pct: 7          # a sleeve opens at most budget / (capital × 7%) names
+  max_total_positions: 8       # across all markets; lowest-conviction picks are dropped first
+  conviction_tilt: 0.5         # 0 = pure inverse-volatility weights, 1 = fully conviction-weighted
+  ic_t_full: 1.5               # rank-IC t-stat at/above which a market keeps its full budget
+  ic_low_mult: 0.6             # budget multiplier when 0 < t < ic_t_full
+  ic_none_mult: 0.4            # budget multiplier when the ranking has shown no edge (t ≤ 0)
+
+holdings_file: holdings.yaml   # optional: positions you already hold → HOLD / ADD / EXIT calls

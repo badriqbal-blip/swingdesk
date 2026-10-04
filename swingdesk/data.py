@@ -206,11 +206,59 @@ def fetch_fundamentals(tickers: list[str], cache_dir: str, ttl_hours: float = 24
             except Exception:  # noqa: BLE001
                 info = {}
             cache_put(cache_dir, key, info)
-        rows[t] = {k: info.get(k) for k in FUND_FIELDS}
+        row = {k: info.get(k) for k in FUND_FIELDS}
+        rev = cache_get(cache_dir, f"epsrev_{t}", ttl_hours)
+        if rev is None:
+            rev = _eps_revision(t)
+            cache_put(cache_dir, f"epsrev_{t}", rev if rev is not None else "none")
+        row["epsRevision30d"] = rev if rev != "none" else None
+        rows[t] = row
         if verbose and (i + 1) % 10 == 0:
             print(f"    fundamentals {i + 1}/{len(tickers)}")
     df = pd.DataFrame.from_dict(rows, orient="index")
     return df
+
+
+def _eps_revision(ticker: str):
+    """30-day change in the consensus next-year EPS estimate (positive = analysts raising numbers)."""
+    import yfinance as yf
+
+    try:
+        tr = yf.Ticker(ticker).eps_trend
+        if tr is None or len(tr) == 0:
+            return None
+        cols = {str(c).lower(): c for c in tr.columns}
+        cur, old = cols.get("current"), cols.get("30daysago")
+        if cur is None or old is None:
+            return None
+        for period in ["+1y", "0y", "+1q"]:
+            if period in tr.index:
+                c, o = tr.loc[period, cur], tr.loc[period, old]
+                if pd.notna(c) and pd.notna(o) and float(o) != 0:
+                    return float(c) / float(o) - 1.0
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def fetch_exdividend(ticker: str, cache_dir: str, ttl_hours: float = 24):
+    import yfinance as yf
+
+    key = f"exdiv_{ticker}"
+    cached = cache_get(cache_dir, key, ttl_hours)
+    if cached is not None:
+        return cached if cached != "none" else None
+    result = None
+    try:
+        cal = yf.Ticker(ticker).calendar
+        if isinstance(cal, dict):
+            ed = cal.get("Ex-Dividend Date")
+            if ed:
+                result = pd.Timestamp(ed).date()
+    except Exception:  # noqa: BLE001
+        pass
+    cache_put(cache_dir, key, result if result is not None else "none")
+    return result
 
 
 def fetch_next_earnings(ticker: str, cache_dir: str, ttl_hours: float = 24):
@@ -329,6 +377,93 @@ def fetch_funding_rates(symbols: list[str]) -> dict[str, float]:
     except Exception:  # noqa: BLE001
         pass
     return out
+
+
+# ─────────────────────────────────────── live prices & bars ──────────────────────────────────────
+def fetch_live_prices(market: str, tickers: list[str], exchange_id: str = "binance", fallbacks: list[str] | None = None) -> dict[str, float]:
+    """Last traded price per ticker (delayed quotes are fine for sizing). Missing names are simply absent."""
+    out: dict[str, float] = {}
+    if not tickers:
+        return out
+    if market == "crypto":
+        try:
+            import ccxt  # type: ignore
+
+            for exid in [exchange_id] + [f for f in (fallbacks or []) if f != exchange_id]:
+                try:
+                    ex = getattr(ccxt, exid)({"enableRateLimit": True})
+                    ex.load_markets()
+                    for s in tickers:
+                        sym = s if s in ex.markets else s.replace("/USDT", "/USD")
+                        if sym in ex.markets:
+                            tk = ex.fetch_ticker(sym)
+                            if tk and tk.get("last"):
+                                out[s] = float(tk["last"])
+                    if out:
+                        return out
+                except Exception:  # noqa: BLE001
+                    continue
+        except ImportError:
+            pass
+        yf_syms = {s: f"{s.split('/')[0]}-USD" for s in tickers}
+    else:
+        yf_syms = {s: s for s in tickers}
+    try:
+        import yfinance as yf
+
+        for s, y in yf_syms.items():
+            try:
+                fi = yf.Ticker(y).fast_info
+                px = None
+                for key in ("last_price", "lastPrice", "regular_market_price"):
+                    try:
+                        px = fi[key]
+                        if px:
+                            break
+                    except Exception:  # noqa: BLE001
+                        continue
+                if px and float(px) > 0:
+                    out[s] = float(px)
+            except Exception:  # noqa: BLE001
+                continue
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def drop_partial_bar(prices: dict[str, pd.DataFrame], market: str, now: pd.Timestamp | None = None) -> dict[str, pd.DataFrame]:
+    """Signals must use completed bars. Drop today's bar while its session is still open
+    (US 13:30–21:00 UTC, UAE 06:00–11:00 UTC Mon–Fri; crypto's UTC day bar is partial until midnight)."""
+    now = now or pd.Timestamp.now(tz="UTC")
+    today = now.normalize().tz_localize(None)
+    hhmm = now.hour * 60 + now.minute
+    if market == "crypto":
+        partial = True
+    elif market == "us":
+        partial = now.weekday() < 5 and 13 * 60 + 30 <= hhmm < 21 * 60
+    else:
+        partial = now.weekday() < 5 and 6 * 60 <= hhmm < 11 * 60
+    if not partial:
+        return prices
+    out = {}
+    for t, df in prices.items():
+        out[t] = df.iloc[:-1] if len(df) and df.index[-1] >= today else df
+    return out
+
+
+def load_holdings(path: str) -> list[dict]:
+    """holdings.yaml → list of {market, ticker, units, entry, stop?}. Missing file → []."""
+    import yaml
+
+    p = Path(path)
+    if not p.exists():
+        return []
+    try:
+        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    except Exception:  # noqa: BLE001
+        return []
+    rows = data.get("holdings", data) if isinstance(data, dict) else data
+    return [r for r in (rows or []) if isinstance(r, dict) and r.get("ticker")]
 
 
 # ────────────────────────────────────────── demo data ────────────────────────────────────────────

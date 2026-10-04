@@ -19,8 +19,9 @@ FUNDAMENTAL_FACTORS = {
     "rev_growth": 1.0, "eps_growth": 0.75,                                            # growth
     "earnings_yield": 0.75, "ev_ebitda_inv": 0.5,                                     # value
     "analyst_score": 0.5, "target_upside": 0.5,                                       # street
+    "eps_revision": 1.0,                                                              # estimate revisions (30d)
 }
-SENTIMENT_FACTORS = {"news_sent": 1.0, "news_attention": 0.25, "funding_contrarian": 1.0}
+SENTIMENT_FACTORS = {"news_sent": 1.0, "news_attention": 0.25, "funding_contrarian": 1.0, "social_bull": 0.5, "social_buzz": 0.25}
 
 TECH_FACTOR_COLS = sorted({c for g in FACTOR_GROUPS.values() for c in g})
 
@@ -144,4 +145,5 @@ def fundamental_factors(fund: pd.DataFrame, close: pd.Series) -> pd.DataFrame:
     g["ev_ebitda_inv"] = (1.0 / ev.where(ev > 0)).clip(upper=1.0)
     g["analyst_score"] = -num("recommendationMean")
     g["target_upside"] = (num("targetMeanPrice") / close.reindex(fund.index) - 1.0).clip(-0.5, 1.0)
+    g["eps_revision"] = num("epsRevision30d").clip(-0.5, 0.5)
     return g

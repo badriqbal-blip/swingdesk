@@ -130,12 +130,83 @@ def print_backtest(bt: dict, label: str = "") -> None:
         print(f"   exits: {m['exit_reasons']}")
 
 
+def print_plan(plan: dict, cfg: dict) -> None:
+    cap = plan["capital_aed"]
+    line = "═" * 100
+    print(f"\n{line}\n PORTFOLIO PLAN — {cap:,.0f} AED" + ("   (live quotes)" if plan.get("live_prices_used") else ""))
+    print(line)
+    for m, sl in plan["sleeves"].items():
+        print(f" {sl['label']:<28} regime {sl['regime']:<9} budget {sl['budget']:>8,.0f} AED"
+              f"   (base {sl['base_weight']*100:.0f}% × regime {sl['regime_mult']:.2f} × signal {sl['ic_mult']:.2f})"
+              + (f"   held {sl.get('held_aed', 0):,.0f}" if sl.get("held_aed") else ""))
+    print(f" {'Cash':<28} {'':<17} {plan['cash_aed']:>8,.0f} AED   ({plan['cash_pct']:.0f}% of capital)")
+    if plan["positions"]:
+        print()
+        rows = []
+        for p in plan["positions"]:
+            rows.append({"market": p["market"], "ticker": p["ticker"], "setup": p["setup"], "AED": f"{p['aed']:,.0f}",
+                         "%": f"{p['pct_capital']:.1f}", "units": _fmt(p["units"], 4 if p["units"] < 10 else 0),
+                         "entry": _fmt(p["entry"]), "stop": _fmt(p["stop"]), "stop%": f"{p['stop_pct']:.1f}",
+                         "T1": _fmt(p["t1"]), "T2": _fmt(p["t2"]), "risk AED": f"{p['risk_aed']:,.0f}", "conv": f"{p['conviction']:.0f}%"})
+        df = pd.DataFrame(rows)
+        for c in ["market", "ticker", "setup"]:
+            w = max(df[c].astype(str).str.len().max(), len(c))
+            df[c] = df[c].astype(str).str.ljust(w)
+        with pd.option_context("display.width", 250, "display.max_columns", 50, "display.colheader_justify", "left"):
+            print(df.to_string(index=False))
+        print()
+        for p in plan["positions"]:
+            fl = "; ".join(p["flags"])
+            print(f"  {p['ticker']:<14} {p['order']}" + (f"   [{fl}]" if fl else ""))
+    else:
+        print("\n No new positions earn capital under current regimes/constraints — the plan is to hold cash" +
+              (" and the positions marked HOLD." if plan["holdings"] else "."))
+    if plan["holdings"]:
+        print("\n Holdings review:")
+        for h in plan["holdings"]:
+            print(f"  {h['ticker']:<14} {h['action']:<10} {h['units']:g} @ {_fmt(h['entry'])} → {_fmt(h['price'])} "
+                  f"({h['pnl_pct']:+.1f}%)  value {h['value_aed']:,.0f} AED  stop→{_fmt(h.get('suggested_stop'))}  {h['reason']}")
+    r = plan["risk"]
+    msg = (f"\n Deployed {r['deployed_aed']:,.0f} AED ({r['deployed_pct']:.0f}%) in {r['n_positions']} new positions; "
+           f"if every stop is hit you lose {r['heat_aed']:,.0f} AED ({r['heat_pct']:.1f}%)")
+    if r.get("one_day_sigma_aed"):
+        msg += f"; typical one-day move ±{r['one_day_sigma_aed']:,.0f} AED (≈{r['annual_vol_pct']:.0f}%/yr vol)"
+    print(msg)
+    for n in plan["notes"]:
+        print(f" • {n}")
+
+
+def print_macro(macro: dict) -> None:
+    dash = macro.get("dashboard")
+    print("\n" + "─" * 100 + "\n MACRO & COMMODITIES\n" + "─" * 100)
+    if dash is not None and not dash.empty:
+        d = dash.copy()
+        for c in ["chg_1d", "chg_1w", "chg_1m", "chg_3m", "vs_200d"]:
+            d[c] = [f"{v:+.2f}{'' if u == 'pts' else '%'}" if np.isfinite(v) else "–" for v, u in zip(d[c], d["unit"])]
+        d["last"] = d["last"].map(lambda v: _fmt(v))
+        d["52w"] = d["pct_52w_range"].map(lambda v: f"{v:.0f}%" if np.isfinite(v) else "–")
+        d["asset"] = d["asset"].str.ljust(d["asset"].str.len().max())
+        with pd.option_context("display.width", 250, "display.colheader_justify", "left"):
+            print(d[["asset", "last", "chg_1d", "chg_1w", "chg_1m", "chg_3m", "vs_200d", "trend_20d", "52w"]].to_string(index=False))
+    for n in macro.get("notes", []):
+        print(f" • {n}")
+    sec = macro.get("sectors")
+    if sec is not None and not sec.empty:
+        lead = ", ".join(f"{r.sector} ({r.rel_1m:+.1f}%)" for r in sec.head(4).itertuples())
+        lag = ", ".join(f"{r.sector} ({r.rel_1m:+.1f}%)" for r in sec.tail(3).itertuples())
+        print(f" Sector rotation vs S&P (1-month relative): leading {lead}; lagging {lag}")
+
+
 # ────────────────────────────────────────── files ────────────────────────────────────────────────
-def save_outputs(results: list[dict], cfg: dict, outdir: str, stamp: str) -> dict:
+def save_outputs(results: list[dict], cfg: dict, outdir: str, stamp: str, plan: dict | None = None, macro: dict | None = None) -> dict:
     out = Path(outdir)
     out.mkdir(parents=True, exist_ok=True)
     paths = {}
-    summary = {"generated": stamp, "capital_aed": cfg["capital_aed"], "markets": []}
+    summary = {"generated": stamp, "capital_aed": cfg["capital_aed"], "plan": plan, "macro": macro, "markets": []}
+    if plan:
+        pp = out / f"plan_{stamp}.csv"
+        pd.DataFrame(plan["positions"]).drop(columns=["flags"], errors="ignore").to_csv(pp, index=False)
+        paths["plan_csv"] = str(pp)
     for res in results:
         c = res["candidates"].copy()
         if not c.empty:
@@ -144,6 +215,7 @@ def save_outputs(results: list[dict], cfg: dict, outdir: str, stamp: str) -> dic
             c.to_csv(p, index_label="ticker")
             paths[f"csv_{res['market']}"] = str(p)
         entry = {k: res[k] for k in ["market", "label", "source", "regime", "notes", "portfolio"]}
+        entry["live_prices"] = res.get("live")
         entry["candidates"] = c.head(25).reset_index().to_dict(orient="records") if not c.empty else []
         entry["diagnostics"] = {k: v for k, v in res.get("diagnostics", {}).items()}
         entry["ml_metrics"] = res.get("ml_metrics")
@@ -157,7 +229,7 @@ def save_outputs(results: list[dict], cfg: dict, outdir: str, stamp: str) -> dic
     jp.write_text(json.dumps(summary, indent=2, default=_json_default), encoding="utf-8")
     paths["json"] = str(jp)
     hp = out / f"briefing_{stamp}.html"
-    hp.write_text(render_html(results, cfg, stamp), encoding="utf-8")
+    hp.write_text(render_html(results, cfg, stamp, plan, macro), encoding="utf-8")
     paths["html"] = str(hp)
     return paths
 
@@ -195,6 +267,11 @@ td.num,th.num{text-align:right}
 .foot b{color:var(--ink);font-weight:600}
 .method{color:var(--muted);font-size:13.5px;line-height:1.55}
 .method p{margin:0 0 8px}
+.split{display:flex;height:22px;border-radius:4px;overflow:hidden;margin:10px 20px 4px;border:1px solid var(--rule)}
+.split i{display:block;height:100%} .split .us{background:#2f6f8f} .split .uae{background:#1f7a5c} .split .crypto{background:#a8661a} .split .cash{background:#cfd6de}
+.legend{display:flex;flex-wrap:wrap;gap:14px;padding:4px 20px 12px;color:var(--muted);font-size:13px}
+.legend b{color:var(--ink);font-weight:600}
+.act{font-weight:600} .act.EXIT{color:var(--neg)} .act.HOLD{color:var(--pos)}
 @media(max-width:640px){main{padding:18px 12px}h1{font-size:24px}.strip{flex-direction:column;gap:8px}}
 """
 
@@ -214,11 +291,110 @@ def _esc(s) -> str:
     return html.escape("" if s is None else str(s))
 
 
-def render_html(results: list[dict], cfg: dict, stamp: str) -> str:
+def _plan_html(plan: dict, cfg: dict) -> str:
+    cap = plan["capital_aed"]
+    sl = plan["sleeves"]
+    seg = {m: (s.get("held_aed", 0) + s.get("new_aed", 0)) for m, s in sl.items()}
+    bar = "".join(f"<i class='{m}' style='width:{100*v/cap:.1f}%' title='{_esc(sl[m]['label'])}'></i>" for m, v in seg.items() if v > 0)
+    bar += f"<i class='cash' style='width:{max(0, plan['cash_pct']):.1f}%' title='Cash'></i>"
+    legend = "".join(f"<span><b>{_esc(sl[m]['label'])}</b> {v:,.0f} AED ({100*v/cap:.0f}%) — {sl[m]['regime'].replace('_', ' ').lower()}</span>"
+                     for m, v in seg.items()) + f"<span><b>Cash</b> {plan['cash_aed']:,.0f} AED ({plan['cash_pct']:.0f}%)</span>"
+    rows = []
+    for p in plan["positions"]:
+        flags = "".join(f"<div class='flag'>{_esc(f)}</div>" for f in p["flags"])
+        rows.append(f"<tr><td><div class='tick'>{_esc(p['ticker'])}</div><span class='setup'>{_esc(p['setup'])}</span></td>"
+                    f"<td class='num'><b>{p['aed']:,.0f}</b><br>{p['pct_capital']:.1f}%</td>"
+                    f"<td class='num'>{_fmt(p['units'], 4 if p['units'] < 10 else 0)}<br>@ {_fmt(p['entry'])} {_esc(p['currency'])}</td>"
+                    f"<td class='num'>{_fmt(p['stop'])}<br><span class='neg'>−{p['stop_pct']:.1f}%</span></td>"
+                    f"<td class='num'>{_fmt(p['t1'])}<br>{_fmt(p['t2'])}</td><td class='num'>{p['risk_aed']:,.0f}</td>"
+                    f"<td class='why'>{_esc(p['order'])}<br>{_esc(p['why'])}{flags}</td></tr>")
+    table = ("<div class='tablewrap'><table><thead><tr><th>Position</th><th class='num'>AED</th><th class='num'>Units</th>"
+             "<th class='num'>Stop</th><th class='num'>T1 / T2</th><th class='num'>Risk AED</th><th>Order and reasoning</th></tr></thead>"
+             f"<tbody>{''.join(rows)}</tbody></table></div>") if rows else \
+        "<div class='notes'><div>No new positions earn capital under the current regimes; the plan is to hold cash" + \
+        (" and the holdings marked HOLD." if plan["holdings"] else ".") + "</div></div>"
+    held = ""
+    if plan["holdings"]:
+        hrows = "".join(
+            f"<tr><td><div class='tick'>{_esc(h['ticker'])}</div>{_esc(h['market'])}</td>"
+            f"<td><span class='act {_esc(str(h['action']).split()[0])}'>{_esc(h['action'])}</span><br><span class='why'>{_esc(h['reason'])}</span></td>"
+            f"<td class='num'>{h['units']:g} @ {_fmt(h['entry'])}</td><td class='num'>{_fmt(h['price'])}<br>"
+            f"<span class='{'pos' if (h['pnl_pct'] or 0) >= 0 else 'neg'}'>{(h['pnl_pct'] or 0):+.1f}%</span></td>"
+            f"<td class='num'>{h['value_aed']:,.0f}</td><td class='num'>{_fmt(h.get('suggested_stop'))}</td></tr>"
+            for h in plan["holdings"])
+        held = ("<div class='notes'><div>Holdings review</div></div><div class='tablewrap'><table><thead><tr><th>Held</th><th>Call</th>"
+                "<th class='num'>Units</th><th class='num'>Price / P&amp;L</th><th class='num'>Value AED</th><th class='num'>Stop to use</th></tr></thead>"
+                f"<tbody>{hrows}</tbody></table></div>")
+    r = plan["risk"]
+    risk = (f"Deployed <b>{r['deployed_aed']:,.0f} AED</b> ({r['deployed_pct']:.0f}%) in {r['n_positions']} new positions. "
+            f"If every stop is hit: <b>−{r['heat_aed']:,.0f} AED</b> ({r['heat_pct']:.1f}% of capital).")
+    if r.get("one_day_sigma_aed"):
+        risk += f" Typical one-day swing ±{r['one_day_sigma_aed']:,.0f} AED (≈{r['annual_vol_pct']:.0f}% annualised)."
+    notes = "".join(f"<div>{_esc(n)}</div>" for n in plan["notes"])
+    return (f"<section><div class='strip NEUTRAL'><div><h2>Where the {cap:,.0f} AED goes</h2>"
+            f"<div class='reg'>{'live quotes used for sizing' if plan.get('live_prices_used') else 'sized on last completed close'}</div></div>"
+            f"<div><p>Budgets come from each market's regime and whether its ranking has carried information; "
+            f"within a market, size is inverse-volatility weighted and tilted by conviction, then capped by the AED each stop would cost.</p></div></div>"
+            f"<div class='split'>{bar}</div><div class='legend'>{legend}</div>{table}{held}"
+            f"<div class='foot'>{risk}</div>" + (f"<div class='notes'>{notes}</div>" if notes else "") + "</section>")
+
+
+def _macro_html(macro: dict) -> str:
+    dash = macro.get("dashboard")
+    rows = ""
+    if dash is not None and not dash.empty:
+        for _, r in dash.iterrows():
+            def cell(v, u=r["unit"]):
+                if not np.isfinite(v):
+                    return "<td class='num'>–</td>"
+                cls = "pos" if v > 0 else "neg" if v < 0 else ""
+                return f"<td class='num {cls}'>{v:+.2f}{'' if u == 'pts' else '%'}</td>"
+            rows += (f"<tr><td><div class='tick'>{_esc(r['asset'])}</div><span class='why'>{_esc(r['ticker'])}</span></td>"
+                     f"<td class='num'>{_fmt(r['last'])}</td>{cell(r['chg_1d'])}{cell(r['chg_1w'])}{cell(r['chg_1m'])}{cell(r['chg_3m'])}{cell(r['vs_200d'])}"
+                     f"<td>{'▲' if r['trend_20d'] == 'up' else '▼'} {r['trend_20d']}</td>"
+                     f"<td class='num'>{r['pct_52w_range']:.0f}%</td></tr>" if np.isfinite(r['pct_52w_range']) else "")
+    table = ("<div class='tablewrap'><table><thead><tr><th>Asset</th><th class='num'>Last</th><th class='num'>1d</th><th class='num'>1w</th>"
+             "<th class='num'>1m</th><th class='num'>3m</th><th class='num'>vs 200d</th><th>20d trend</th><th class='num'>52w range</th></tr></thead>"
+             f"<tbody>{rows}</tbody></table></div>") if rows else "<div class='notes'><div>Macro data unavailable this run.</div></div>"
+    notes = "".join(f"<div>{_esc(n)}</div>" for n in macro.get("notes", []))
+    pos = macro.get("positioning")
+    pos_html = ""
+    if pos is not None and not pos.empty:
+        prow = "".join(f"<tr><td>{_esc(r['market'])}</td><td class='num'>{r['net_spec_pct_oi']:+.0f}%</td><td class='num'>{r['pct_3y']:.0f}th</td>"
+                       f"<td class='num'>{r['wk_change']:+.1f}</td><td class='{'neg' if r['read'] == 'crowded long' else 'pos' if r['read'] == 'crowded short' else ''}'>{_esc(r['read'])}</td>"
+                       f"<td class='why'>{_esc(r['as_of'])}</td></tr>" for _, r in pos.iterrows())
+        pos_html = ("<div class='notes'><div>Futures positioning (CFTC): net speculative position as % of open interest</div></div>"
+                    "<div class='tablewrap'><table><thead><tr><th>Market</th><th class='num'>Net spec</th><th class='num'>3y pct</th>"
+                    f"<th class='num'>Wk chg</th><th>Read</th><th>As of</th></tr></thead><tbody>{prow}</tbody></table></div>")
+    sec = macro.get("sectors")
+    sec_html = ""
+    if sec is not None and not sec.empty:
+        srow = "".join(f"<tr><td>{_esc(r['sector'])} <span class='why'>{_esc(r['ticker'])}</span></td>"
+                       + "".join(f"<td class='num {'pos' if v > 0 else 'neg'}'>{v:+.1f}%</td>" for v in [r['rel_1w'], r['rel_1m'], r['rel_3m']])
+                       + f"<td>{'above' if r['above_50d'] else 'below'} 50d</td></tr>" for _, r in sec.iterrows())
+        sec_html = ("<div class='notes'><div>US sector rotation — performance relative to the S&amp;P 500</div></div>"
+                    "<div class='tablewrap'><table><thead><tr><th>Sector</th><th class='num'>1w rel</th><th class='num'>1m rel</th>"
+                    f"<th class='num'>3m rel</th><th>Trend</th></tr></thead><tbody>{srow}</tbody></table></div>")
+    return (f"<section><div class='strip NEUTRAL'><div><h2>Macro, commodities and flows</h2><div class='reg'>oil, metals, rates, dollar, credit, positioning</div></div>"
+            f"<div><p>Context the plan reads from: trend in each asset, what the combinations mean, where futures money is crowded, and which US sectors are leading.</p></div></div>"
+            f"{table}" + (f"<div class='notes'>{notes}</div>" if notes else "") + f"{pos_html}{sec_html}</section>")
+
+
+_PWA_HEAD = ("<link rel='manifest' href='manifest.webmanifest'><meta name='theme-color' content='#1f7a5c'>"
+             "<meta name='apple-mobile-web-app-capable' content='yes'><meta name='apple-mobile-web-app-status-bar-style' content='default'>"
+             "<meta name='apple-mobile-web-app-title' content='SwingDesk'><link rel='apple-touch-icon' href='apple-touch-icon.png'>"
+             "<link rel='icon' type='image/png' sizes='192x192' href='icon-192.png'>")
+
+
+def render_html(results: list[dict], cfg: dict, stamp: str, plan: dict | None = None, macro: dict | None = None) -> str:
     rk = cfg["risk"]
     parts = [f"<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-             f"<title>SwingDesk briefing {stamp}</title><style>{_CSS}</style></head><body><main>",
+             f"<title>SwingDesk briefing {stamp}</title>{_PWA_HEAD}<style>{_CSS}</style></head><body><main>",
              f"<h1>Swing briefing</h1><p class='sub'>{_esc(stamp)} — capital {cfg['capital_aed']:,} AED, horizon {cfg['holding_days']} trading days, spot only, long only.</p>"]
+    if plan:
+        parts.append(_plan_html(plan, cfg))
+    if macro:
+        parts.append(_macro_html(macro))
     for res in results:
         snap, cands, port = res["regime"], res["candidates"], res["portfolio"]
         parts.append(f"<section><div class='strip {snap['regime']}'><div><h2>{_esc(res['label'])}</h2>"

@@ -19,6 +19,17 @@ def load_config(path: str | None = None) -> dict:
     cfg.setdefault("scan", {})
     cfg["scan"].setdefault("fundamentals_top", 40)
     cfg["scan"].setdefault("news_top", 25)
+    cfg.setdefault("allocation", {})
+    al = cfg["allocation"]
+    al.setdefault("market_base_weights", {"us": 0.5, "uae": 0.2, "crypto": 0.3})
+    al.setdefault("max_deploy_pct", 100)
+    al.setdefault("min_position_pct", 7)
+    al.setdefault("max_total_positions", 8)
+    al.setdefault("conviction_tilt", 0.5)
+    al.setdefault("ic_t_full", 1.5)
+    al.setdefault("ic_low_mult", 0.6)
+    al.setdefault("ic_none_mult", 0.4)
+    cfg.setdefault("holdings_file", "holdings.yaml")
     Path(cfg["cache_dir"]).mkdir(parents=True, exist_ok=True)
     return cfg
 
