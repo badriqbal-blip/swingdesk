@@ -1,0 +1,70 @@
+name: SwingDesk scan
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "40 21 * * 1-5"
+    - cron: "0 14 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: swingdesk
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unpack the code zip on the first run
+        run: |
+          ZIP=$(ls *.zip 2>/dev/null | head -1)
+          if [ ! -f run.py ] && [ -n "$ZIP" ]; then
+            unzip -q "$ZIP" -d .bundle
+            SRC=$(dirname "$(find .bundle -maxdepth 3 -name run.py | head -1)")
+            rm -rf "$SRC/.github"
+            cp -r "$SRC"/. .
+            rm -rf .bundle "$ZIP"
+            git config user.name github-actions
+            git config user.email github-actions@github.com
+            git add -A
+            git commit -m "Unpack SwingDesk code"
+            git push
+          fi
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Run the scan
+        run: |
+          EXTRA=""
+          if [ "$(date -u +%u)" = "7" ]; then EXTRA="--with-backtest"; fi
+          python run.py scan --top 15 $EXTRA
+      - run: python scripts/build_site.py
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - uses: actions/upload-artifact@v4
+        with:
+          name: swingdesk-output-${{ github.run_id }}
+          path: output
+          retention-days: 90
+
+  deploy:
+    needs: scan
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
