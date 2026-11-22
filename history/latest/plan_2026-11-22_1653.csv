@@ -1,0 +1,2 @@
+market,ticker,name,setup,conviction,entry,stop,stop_pct,t1,t2,units,pos_native,currency,aed,pct_capital,risk_aed,hold_days,order,why,live_price
+uae,AIRARABIA.AE,AIR ARABIA AED1,Pullback in uptrend,57.319470339903496,4.9942631383641745,4.77155667989233,4.459245584420479,5.328322826071941,5.662382513779707,408.0,2037.659360452583,AED,2037.659360452583,10.188296802262915,90.8642350565124,15,Limit buy 4.994 (or market if it reclaims the 21-EMA),favourable entry timing; volatility compression; weak fundamentals; positive news flow,5.03000020980835
