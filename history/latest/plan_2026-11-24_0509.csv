@@ -1,0 +1,2 @@
+market,ticker,name,setup,conviction,entry,stop,stop_pct,t1,t2,units,pos_native,currency,aed,pct_capital,risk_aed,hold_days,order,why,live_price
+uae,DU.AE,EMIRATE INTEGRATED TELECOM AED1,Momentum continuation,72.25477974960657,13.58,12.706745686709601,6.430444133213543,14.889881469935599,16.1997629398712,114.0,1548.1200000000001,AED,1548.1200000000001,7.7406,99.55099171510551,15,"Buy at market, half size; add after a 2–3 day pause",momentum leader; strong trend structure; volatility compression; volume accumulation,13.58
