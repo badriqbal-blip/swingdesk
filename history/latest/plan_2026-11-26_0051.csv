@@ -1,0 +1,2 @@
+market,ticker,name,setup,conviction,entry,stop,stop_pct,t1,t2,units,pos_native,currency,aed,pct_capital,risk_aed,hold_days,order,why,live_price
+uae,PARKIN.AE,PARKIN COMPANY PJSC AED0.02,Momentum continuation,78.50158403276593,6.62,6.229099431765132,5.904842420466289,7.206350852352302,7.792701704704605,255.0,1688.1000000000001,AED,1688.1000000000001,8.4405,99.67964489989141,15,"Buy at market, half size; add after a 2–3 day pause",momentum leader; strong trend structure,6.62
